@@ -17,3 +17,5 @@ def test_liveness_accepts_file_upload_and_keeps_contract():
 
     assert set(data.keys()) == {"liveness", "confidence", "checks"}
     assert set(data["checks"].keys()) == {"blink_detected", "head_movement"}
+    assert 0.0 <= float(data["confidence"]) <= 1.0
+    assert isinstance(data["liveness"], bool)
