@@ -1,4 +1,5 @@
-from fastapi import APIRouter
+from fastapi import APIRouter, UploadFile, File
+from typing import Optional
 from app.application.liveness_service import LivenessService
 from app.domain.models import LivenessResponse
 
@@ -7,5 +8,5 @@ service = LivenessService()
 
 
 @router.post("/liveness/check", response_model=LivenessResponse)
-def liveness_check() -> LivenessResponse:
+async def liveness_check(file: Optional[UploadFile] = File(None)) -> LivenessResponse:
     return service.check()
