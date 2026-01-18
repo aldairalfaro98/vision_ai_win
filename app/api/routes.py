@@ -9,4 +9,5 @@ service = LivenessService()
 
 @router.post("/liveness/check", response_model=LivenessResponse)
 async def liveness_check(file: Optional[UploadFile] = File(None)) -> LivenessResponse:
-    return service.check()
+    image_bytes = await file.read() if file is not None else None
+    return service.check(image_bytes)
