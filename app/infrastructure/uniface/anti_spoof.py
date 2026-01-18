@@ -1,6 +1,6 @@
 # app/infrastructure/uniface/anti_spoof.py
 from dataclasses import dataclass
-from typing import Optional
+from typing import Optional, Tuple
 
 import cv2
 import numpy as np
@@ -13,25 +13,26 @@ from uniface.spoofing import MiniFASNet
 class AntiSpoofResult:
     is_real: bool
     confidence: float
+    bbox: Tuple[float, float, float, float]  # <- nuevo
 
 
 class UniFaceAntiSpoofPredictor:
     def __init__(self) -> None:
-        # Nota UniFace: modelos pueden auto-descargarse en primer uso :contentReference[oaicite:4]{index=4}
         self.detector = RetinaFace()
-        self.spoofer = MiniFASNet()  # V2 por defecto (recomendado en docs) :contentReference[oaicite:5]{index=5}
+        self.spoofer = MiniFASNet()
 
     def predict_from_bgr(self, image_bgr: np.ndarray) -> Optional[AntiSpoofResult]:
         faces = self.detector.detect(image_bgr)
         if not faces:
             return None
 
-        face = faces[0]  # MVP: primera cara
-        result = self.spoofer.predict(image_bgr, face.bbox)  # :contentReference[oaicite:6]{index=6}
+        face = faces[0]
+        result = self.spoofer.predict(image_bgr, face.bbox)
 
         return AntiSpoofResult(
             is_real=bool(result.is_real),
             confidence=float(result.confidence),
+            bbox=tuple(face.bbox),  # <- nuevo
         )
 
 

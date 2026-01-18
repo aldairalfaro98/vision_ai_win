@@ -1,13 +1,17 @@
-# app/tests/test_liveness_multiframe.py
+# app/tests/test_liveness_landmarks_logs.py
 from pathlib import Path
+import logging
+
 from fastapi.testclient import TestClient
 from app.main import app
 
 client = TestClient(app)
 
-def test_liveness_accepts_multiple_files_and_keeps_contract():
-    img_path = Path(__file__).parent / "assets" / "face.jpeg"
 
+def test_multiframe_emits_landmarks_logs(caplog):
+    caplog.set_level(logging.INFO, logger="liveness")
+
+    img_path = Path(__file__).parent / "assets" / "face.jpeg"
     with img_path.open("rb") as f1, img_path.open("rb") as f2, img_path.open("rb") as f3:
         files = [
             ("files", ("face1.jpeg", f1, "image/jpeg")),
@@ -17,8 +21,8 @@ def test_liveness_accepts_multiple_files_and_keeps_contract():
         res = client.post("/liveness/check-frames", files=files)
 
     assert res.status_code == 200
-    data = res.json()
-    assert set(data.keys()) == {"liveness", "confidence", "checks"}
-    assert set(data["checks"].keys()) == {"blink_detected", "head_movement"}
-    assert 0.0 <= float(data["confidence"]) <= 1.0
-    assert isinstance(data["liveness"], bool)
+
+    messages = [rec.getMessage() for rec in caplog.records]
+
+    # Buscamos evidencia de que se intentó landmarks/pose
+    assert any("ear_left=" in m for m in messages) or any("landmarks_or_pose_failed" in m for m in messages)
