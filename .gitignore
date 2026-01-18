@@ -30,7 +30,7 @@ obj/
 # Dependencies
 node_modules/
 vendor/
-
+myenv/
 # Env files
 .env
 .env.*
