@@ -87,7 +87,7 @@ def _frames_to_avi_bytes(frames: list[np.ndarray], *, fps: int) -> bytes:
     fourcc = cv2.VideoWriter_fourcc(*"MJPG")
 
     fd, path = tempfile.mkstemp(suffix=".avi")
-    os.close(fd)  # Importante en Windows: libera el handle
+    os.close(fd)  
 
     try:
         writer = cv2.VideoWriter(path, fourcc, float(fps), (w, h))
@@ -147,12 +147,12 @@ def _render_status(result: Optional[ApiResult]) -> None:
         return
 
     if result.liveness:
-        st.success(f"✅ VIVO | conf={result.confidence:.2f} | PAD={result.anti_label}")
+        st.success(f"VIVO | conf={result.confidence:.2f} | PAD={result.anti_label}")
     else:
-        st.error(f"⛔ NO VIVO | conf={result.confidence:.2f} | PAD={result.anti_label}")
+        st.error(f"NO VIVO | conf={result.confidence:.2f} | PAD={result.anti_label}")
 
     actual_output = {
-        "parpadeos_detectados": result.blink_count,
+        "parpadeos_detectados": bool(result.blink_count > 0),
         "mov_cabeza": result.head_movement,
     }
 
@@ -169,7 +169,7 @@ def _render_status(result: Optional[ApiResult]) -> None:
     col_a, col_b = st.columns(2, gap="large")
 
     with col_a:
-        st.caption("Output actual (debug)")
+        st.caption("Output actual")
         st.json(actual_output)
 
     with col_b:
@@ -179,7 +179,7 @@ def _render_status(result: Optional[ApiResult]) -> None:
 
 def main() -> None:
     st.set_page_config(page_title="Liveness (Demo)", layout="wide")
-    st.title("Liveness Detection — Demo híbrida (2s)")
+    st.title("Liveness Detection — Demo híbrida")
 
     st.info("Instrucción: **Parpadea 2 veces** y **mueve la cabeza izquierda↔derecha** durante el clip.")
 
@@ -246,6 +246,12 @@ def main() -> None:
             payload = None
 
         if payload is None:
+            # FIX-413: limit frames for /check-frames fallback (rollback: remove this block).
+            max_frames_fallback = 90  # Backend default max_frames (see app/config.py).
+            if len(frames) > max_frames_fallback:
+                indices = np.linspace(0, len(frames) - 1, num=max_frames_fallback, dtype=np.int32)
+                frames = [frames[int(i)] for i in indices]
+            # END FIX-413
             payload = _call_api_frames(api_frames, frames)
 
         result = _parse_result(payload)

@@ -19,7 +19,7 @@ Desktop.ini
 *.swp
 *.bak
 *.old
-
+*.mp4
 # Build outputs
 dist/
 build/

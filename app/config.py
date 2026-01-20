@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     # --- Batch/video ingestion ---
     max_frames: int = Field(default=90, ge=1, le=300)
 
-    # Preprocesamiento “congelado” en backend
+    # Preprocesamiento en backend
     preproc_max_side_px: int = Field(default=640, ge=160, le=2048)
 
     # --- Anti-spoofing (PAD) ---
