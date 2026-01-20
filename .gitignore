@@ -33,7 +33,7 @@ vendor/
 myenv/
 # Env files
 .env
-.env.*
+
 
 # Coverage
 coverage/
