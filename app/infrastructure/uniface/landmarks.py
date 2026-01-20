@@ -23,7 +23,7 @@ class UniFaceLandmarks:
 
     @staticmethod
     def _eye_aspect_ratio(eye_landmarks: np.ndarray) -> float:
-        # Misma fórmula de la doc de UniFace :contentReference[oaicite:3]{index=3}
+        # contentReference[oaicite:3]{index=3}
         v1 = np.linalg.norm(eye_landmarks[1] - eye_landmarks[5])
         v2 = np.linalg.norm(eye_landmarks[2] - eye_landmarks[4])
         h = np.linalg.norm(eye_landmarks[0] - eye_landmarks[3])
@@ -31,7 +31,7 @@ class UniFaceLandmarks:
 
     @staticmethod
     def _estimate_head_pose(landmarks: np.ndarray, image_shape) -> Tuple[np.ndarray, np.ndarray]:
-        # Basado en el ejemplo de UniFace (solvePnP) :contentReference[oaicite:4]{index=4}
+        # (solvePnP) :contentReference[oaicite:4]{index=4}
         model_points = np.array([
             (0.0, 0.0, 0.0),          # Nose tip
             (0.0, -330.0, -65.0),     # Chin
