@@ -151,12 +151,30 @@ def _render_status(result: Optional[ApiResult]) -> None:
     else:
         st.error(f"⛔ NO VIVO | conf={result.confidence:.2f} | PAD={result.anti_label}")
 
-    st.write(
-        {
-            "parpadeos_detectados": result.blink_count,
-            "mov_cabeza": result.head_movement,
-        }
-    )
+    actual_output = {
+        "parpadeos_detectados": result.blink_count,
+        "mov_cabeza": result.head_movement,
+    }
+
+    expected_output = {
+        "liveness": bool(result.liveness),
+        "confidence": float(round(result.confidence, 2)),
+        "checks": {
+            "blink_detected": bool(result.blink_count > 0),   # regla UI: >0 => True
+            "head_movement": bool(result.head_movement),
+            "pad_result": str(result.anti_label),             # REAL / FAKE
+        },
+    }
+
+    col_a, col_b = st.columns(2, gap="large")
+
+    with col_a:
+        st.caption("Output actual (debug)")
+        st.json(actual_output)
+
+    with col_b:
+        st.caption("Output esperado (prueba técnica)")
+        st.json(expected_output)
 
 
 def main() -> None:
