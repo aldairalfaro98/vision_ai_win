@@ -1,4 +1,4 @@
-# app/scripts/webcam_stream_client.py
+# scripts/webcam_stream_client.py
 import time
 import uuid
 from dataclasses import dataclass

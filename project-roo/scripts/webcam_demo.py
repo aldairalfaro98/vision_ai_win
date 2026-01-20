@@ -1,4 +1,4 @@
-# app/scripts/webcam_demo.py
+# scripts/webcam_demo.py
 import time
 from dataclasses import dataclass
 from typing import List, Tuple

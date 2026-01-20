@@ -1,195 +1,259 @@
-# app/application/liveness_service.py
+﻿# app/application/liveness_service.py
+from __future__ import annotations
+
 import logging
 from statistics import median
-from typing import Dict, List, Optional
-from app.domain.blink import detect_blink_from_ear_series
-from app.domain.decision import decide_liveness
-from app.domain.head_movement import detect_head_movement_from_angles
+from typing import List, Optional, Sequence, Tuple
 
-from app.domain.models import LivenessResponse, LivenessChecks
-from app.domain.session_window import SessionWindow
-from app.infrastructure.uniface.anti_spoof import (
-    UniFaceAntiSpoofPredictor,
-    decode_image_bytes_to_bgr,
-)
+import cv2
+import numpy as np
+
+from app.domain.blink import count_blinks_from_ear_series
+from app.domain.decision import LivenessSignals, build_decision_strategy, decide_liveness
+from app.domain.head_movement import detect_head_movement_from_angles, yaw_range_from_angles
+from app.domain.models import AntiSpoofCheck, LivenessChecks, LivenessResponse
+from app.infrastructure.uniface.anti_spoof import UniFaceAntiSpoofPredictor, decode_image_bytes_to_bgr
 from app.infrastructure.uniface.landmarks import UniFaceLandmarks
 from app.infrastructure.uniface.pose import rvec_to_euler_degrees
+from app.infrastructure.video_frames import extract_evenly_spaced_frames_bgr
 
-logger = logging.getLogger("liveness")
+logger = logging.getLogger(__name__)
 
-_predictor = UniFaceAntiSpoofPredictor()
+_anti = UniFaceAntiSpoofPredictor()
 _landmarks = UniFaceLandmarks()
-_sessions: Dict[str, SessionWindow] = {}
 
 
-
-# LivenessService: servicio de verificación de vida
 class LivenessService:
-
-# Verifica liveness a partir de bytes de imagen
     def check(self, image_bytes: Optional[bytes]) -> LivenessResponse:
-        if image_bytes is None:
-            return self._empty()
-
-        image_bgr = decode_image_bytes_to_bgr(image_bytes)
-        anti = _predictor.predict_from_bgr(image_bgr)
-
-        if anti is None:
-            return self._empty()
-
-        return LivenessResponse(
-            liveness=anti.is_real,
-            confidence=anti.confidence,
-            checks=LivenessChecks(blink_detected=False, head_movement=False),
-        )
-    
-# nuevo: streaming style (1 frame)
-    def check_frame(self, *, image_bytes: bytes, session_id: str) -> LivenessResponse:
-        win = self._get_window(session_id)
-        sig = self._analyze_frame(image_bytes)
-        if sig is None:
-            live, conf, blink, head = win.compute()
-            return self._resp(live, conf, blink, head)
-        win.add(**sig)
-        live, conf, blink, head = win.compute()
-        logger.info(
-            "frame_decision: sid=%s live=%s conf=%.3f blink=%s head=%s",
-            session_id,
-            live,
-            conf,
-            blink,
-            head,
-        )
-        return self._resp(live, conf, blink, head)
-
-    def _get_window(self, session_id: str) -> SessionWindow:
-        if session_id not in _sessions:
-            _sessions[session_id] = SessionWindow(window_size=8, min_real=3, threshold=0.6)
-        return _sessions[session_id]
-
-    def _analyze_frame(self, image_bytes: bytes):
-        img = decode_image_bytes_to_bgr(image_bytes)
-        anti = _predictor.predict_from_bgr(img)
-        if anti is None:
-            return None
-        ear_avg, angles = self._signals_from_bbox(img, anti.bbox)
-        return {
-            "is_real": bool(anti.is_real),
-            "confidence": float(anti.confidence),
-            "ear_avg": ear_avg,
-            "angles": angles,
-        }
-
-    def _signals_from_bbox(self, img, bbox):
-        lm = _landmarks.analyze(img, bbox)
-        if not lm:
-            return None, None
-        ear_avg = float((lm.ear_left + lm.ear_right) / 2.0)
-        angles = rvec_to_euler_degrees(lm.rvec)
-        return ear_avg, angles
-
-    def _resp(self, live: bool, conf: float, blink: bool, head: bool) -> LivenessResponse:
-        return LivenessResponse(
-            liveness=bool(live),
-            confidence=float(max(0.0, min(1.0, conf))),
-            checks=LivenessChecks(blink_detected=bool(blink), head_movement=bool(head)),
-        )
-
-    def _empty(self) -> LivenessResponse:
-        return self._resp(False, 0.0, False, False)
-
-# Extra method for multiple frames
-
-    def check_frames(
-        self,
-        frames_bytes: List[bytes],
-        *,
-        min_real: int = 3,
-        threshold: float = 0.6,
-    ) -> LivenessResponse:
-        confidences: List[float] = []
-        real_count = 0
-        ear_series: List[float] = []
-        pose_angles: List[tuple[float, float, float]] = []
-
-        logger.info(
-            "check_frames: received=%d min_real=%d threshold=%.2f",
-            len(frames_bytes),
-            min_real,
-            threshold,
-        )
-
-        for i, b in enumerate(frames_bytes):
-            try:
-                img = decode_image_bytes_to_bgr(b)
-            except Exception as e:
-                logger.warning("frame[%d]: decode_failed err=%s", i, e)
-                continue
-
-            anti = _predictor.predict_from_bgr(img)
-            if anti is None:
-                logger.info("frame[%d]: no_face_detected", i)
-                continue
-
-            logger.info("frame[%d]: is_real=%s confidence=%.4f", i, anti.is_real, anti.confidence)
-
-            confidences.append(anti.confidence)
-            if anti.is_real:
-                real_count += 1
-
-           # ---- 2.5.1: Landmarks + logs (EAR + pose), reusando bbox ----
-            try:
-                lm = _landmarks.analyze(img, anti.bbox)
-                if lm:
-                    ear_avg = float((lm.ear_left + lm.ear_right) / 2.0)
-                    ear_series.append(ear_avg)
-                    angles = rvec_to_euler_degrees(lm.rvec)
-                    pose_angles.append(angles)
-                    logger.info("frame[%d]: ear_left=%.4f ear_right=%.4f", i, lm.ear_left, lm.ear_right)
-                    logger.info("frame[%d]: angles(y,p,r)=%s", i, angles)
-                    logger.info("frame[%d]: rvec=%s", i, lm.rvec.reshape(-1))
-            except Exception as e:
-                logger.warning("frame[%d]: landmarks_or_pose_failed err=%s", i, e)
-            # -------------------------------------------------------------
-
-
-        if not confidences:
+        if not image_bytes:
             return LivenessResponse(
                 liveness=False,
                 confidence=0.0,
-                checks=LivenessChecks(blink_detected=False, head_movement=False),
+                checks=LivenessChecks(),
+                message="No image provided.",
             )
 
-        conf_med = float(median(confidences))
-        anti_spoof_passed = (real_count >= min_real) and (conf_med >= threshold)
-        blink_detected = detect_blink_from_ear_series(ear_series)
-        head_movement = detect_head_movement_from_angles(pose_angles)
-        liveness_final = decide_liveness(
-            anti_spoof_passed=anti_spoof_passed,
-            blink_detected=blink_detected,
-            head_movement=head_movement,
-        )
-        logger.info(
-            "decision: anti_spoof_passed=%s blink=%s head=%s => liveness=%s",
-            anti_spoof_passed,
-            blink_detected,
-            head_movement,
-            liveness_final,
-        )
-        #Log de ear_series y blink_detected
-        logger.info("blink: ear_series_len=%d blink_detected=%s", len(ear_series), blink_detected)
+        img = decode_image_bytes_to_bgr(image_bytes)
+        img = _resize_max_side(img, max_side_px=640)
 
-        logger.info(
-            "check_frames: processed=%d real_count=%d median_conf=%.4f liveness=%s",
-            len(confidences),
-            real_count,
-            conf_med,
-            liveness_final,
+        anti_res = _anti.predict_from_bgr(img)
+        if anti_res is None:
+            return LivenessResponse(
+                liveness=False,
+                confidence=0.0,
+                checks=LivenessChecks(
+                    anti_spoof=AntiSpoofCheck(label="NO_FACE", confidence=0.0, passed=False),
+                ),
+                message="No face detected.",
+            )
+
+        label = "REAL" if anti_res.is_real else "FAKE"
+        checks = LivenessChecks(
+            anti_spoof=AntiSpoofCheck(label=label, confidence=anti_res.confidence, passed=anti_res.is_real),
         )
 
         return LivenessResponse(
-            liveness=liveness_final,
-            confidence=conf_med,
-            checks=LivenessChecks(blink_detected=blink_detected, head_movement=head_movement),
+            liveness=bool(anti_res.is_real),
+            confidence=float(anti_res.confidence),
+            checks=checks,
+            message="Single-frame PAD only (demo helper).",
         )
 
+    def check_video(
+        self,
+        video_bytes: bytes,
+        *,
+        max_frames: int,
+        preproc_max_side_px: int,
+        anti_min_real_frames: int,
+        anti_min_confidence: float,
+        blink_baseline_frames: int,
+        blink_close_ratio: float,
+        blink_open_ratio: float,
+        blink_min_closed_frames: int,
+        blink_min_count: int,
+        head_baseline_frames: int,
+        head_yaw_delta_deg: float,
+        decision_mode: str,
+    ) -> LivenessResponse:
+        frames_bgr = extract_evenly_spaced_frames_bgr(video_bytes, max_frames=int(max_frames))
+        if not frames_bgr:
+            return LivenessResponse(
+                liveness=False,
+                confidence=0.0,
+                checks=LivenessChecks(),
+                message="Could not decode video or extracted 0 frames.",
+            )
+
+        return self._evaluate_frames_bgr(
+            frames_bgr,
+            preproc_max_side_px=preproc_max_side_px,
+            anti_min_real_frames=anti_min_real_frames,
+            anti_min_confidence=anti_min_confidence,
+            blink_baseline_frames=blink_baseline_frames,
+            blink_close_ratio=blink_close_ratio,
+            blink_open_ratio=blink_open_ratio,
+            blink_min_closed_frames=blink_min_closed_frames,
+            blink_min_count=blink_min_count,
+            head_baseline_frames=head_baseline_frames,
+            head_yaw_delta_deg=head_yaw_delta_deg,
+            decision_mode=decision_mode,
+        )
+
+    def check_frames(
+        self,
+        frames_bytes: Sequence[bytes],
+        *,
+        preproc_max_side_px: int,
+        anti_min_real_frames: int,
+        anti_min_confidence: float,
+        blink_baseline_frames: int,
+        blink_close_ratio: float,
+        blink_open_ratio: float,
+        blink_min_closed_frames: int,
+        blink_min_count: int,
+        head_baseline_frames: int,
+        head_yaw_delta_deg: float,
+        decision_mode: str,
+    ) -> LivenessResponse:
+        frames_bgr: List[np.ndarray] = []
+        for b in frames_bytes:
+            try:
+                img = decode_image_bytes_to_bgr(b)
+                frames_bgr.append(img)
+            except Exception:
+                continue
+
+        if not frames_bgr:
+            return LivenessResponse(
+                liveness=False,
+                confidence=0.0,
+                checks=LivenessChecks(),
+                message="No valid frames decoded.",
+            )
+
+        return self._evaluate_frames_bgr(
+            frames_bgr,
+            preproc_max_side_px=preproc_max_side_px,
+            anti_min_real_frames=anti_min_real_frames,
+            anti_min_confidence=anti_min_confidence,
+            blink_baseline_frames=blink_baseline_frames,
+            blink_close_ratio=blink_close_ratio,
+            blink_open_ratio=blink_open_ratio,
+            blink_min_closed_frames=blink_min_closed_frames,
+            blink_min_count=blink_min_count,
+            head_baseline_frames=head_baseline_frames,
+            head_yaw_delta_deg=head_yaw_delta_deg,
+            decision_mode=decision_mode,
+        )
+
+    def _evaluate_frames_bgr(
+        self,
+        frames_bgr: Sequence[np.ndarray],
+        *,
+        preproc_max_side_px: int,
+        anti_min_real_frames: int,
+        anti_min_confidence: float,
+        blink_baseline_frames: int,
+        blink_close_ratio: float,
+        blink_open_ratio: float,
+        blink_min_closed_frames: int,
+        blink_min_count: int,
+        head_baseline_frames: int,
+        head_yaw_delta_deg: float,
+        decision_mode: str,
+    ) -> LivenessResponse:
+        anti_is_real: List[bool] = []
+        anti_confs: List[float] = []
+        ear_series: List[float] = []
+        angles_series: List[Tuple[float, float, float]] = []
+        frames_with_face = 0
+
+        for raw in frames_bgr:
+            img = _resize_max_side(raw, max_side_px=int(preproc_max_side_px))
+
+            anti = _anti.predict_from_bgr(img)
+            if anti is None:
+                continue
+
+            frames_with_face += 1
+            anti_is_real.append(bool(anti.is_real))
+            anti_confs.append(float(anti.confidence))
+
+            lm = _landmarks.analyze(img, anti.bbox)
+            if lm is None:
+                continue
+
+            ear_series.append(float((lm.ear_left + lm.ear_right) / 2.0))
+            angles_series.append(rvec_to_euler_degrees(lm.rvec))
+
+        if frames_with_face == 0:
+            checks = LivenessChecks(
+                anti_spoof=AntiSpoofCheck(label="NO_FACE", confidence=0.0, passed=False),
+            )
+            return LivenessResponse(
+                liveness=False,
+                confidence=0.0,
+                checks=checks,
+                message="No face detected in any frame.",
+            )
+
+        conf_med = float(median(anti_confs)) if anti_confs else 0.0
+        real_count = int(sum(1 for x in anti_is_real if x))
+        anti_passed = bool(real_count >= int(anti_min_real_frames) and conf_med >= float(anti_min_confidence))
+
+        blink_count = count_blinks_from_ear_series(
+            ear_series,
+            baseline_frames=int(blink_baseline_frames),
+            close_ratio=float(blink_close_ratio),
+            open_ratio=float(blink_open_ratio),
+            min_closed_frames=int(blink_min_closed_frames),
+        )
+
+        head_movement = detect_head_movement_from_angles(
+            angles_series,
+            baseline_frames=int(head_baseline_frames),
+            yaw_delta_deg=float(head_yaw_delta_deg),
+        )
+
+        strategy = build_decision_strategy(mode=str(decision_mode), min_blinks=int(blink_min_count))
+        signals = LivenessSignals(anti_spoof_passed=anti_passed, blink_count=int(blink_count), head_movement=bool(head_movement))
+        live = decide_liveness(strategy=strategy, signals=signals)
+
+        label = "REAL" if anti_passed else "FAKE"
+        yaw_range = yaw_range_from_angles(angles_series, baseline_frames=int(head_baseline_frames))
+
+        checks = LivenessChecks(
+            blink_detected=bool(blink_count >= int(blink_min_count)),
+            head_movement=bool(head_movement),
+            blink_count=int(blink_count),
+            anti_spoof=AntiSpoofCheck(label=label, confidence=float(conf_med), passed=bool(anti_passed)),
+        )
+
+        msg = (
+            f"frames_with_face={frames_with_face} real_count={real_count} "
+            f"conf_med={conf_med:.2f} blinks={blink_count} yaw_range={yaw_range:.1f}"
+        )
+
+        logger.info(msg)
+
+        return LivenessResponse(
+            liveness=bool(live),
+            confidence=float(conf_med),
+            checks=checks,
+            message=msg,
+        )
+
+
+def _resize_max_side(frame: np.ndarray, *, max_side_px: int) -> np.ndarray:
+    if frame is None:
+        return frame
+
+    h, w = frame.shape[:2]
+    m = max(h, w)
+    if m <= int(max_side_px):
+        return frame
+
+    scale = float(max_side_px) / float(m)
+    nh, nw = int(h * scale), int(w * scale)
+    return cv2.resize(frame, (nw, nh))
